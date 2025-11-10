@@ -24,16 +24,33 @@ Look for sections labeled:
 - "TOP FACTOR ANALYSIS: SHOPEE" or just "Shopee"
 - "TOP FACTOR ANALYSIS: LAZADA" or just "Lazada"  
 - "TOP FACTOR ANALYSIS: TIKTOK" or just "TikTok"
+**Summary Tables:**
+CRITICAL: Some spreadsheets contain separate summary tables labeled:
+- "Top Factors" 
+- "Bottom Factors"
+- "Key Metrics Summary"
+These tables display RAW NUMBERS (not scores) - such as actual follower counts, actual review counts, actual voucher counts.
+
+When you encounter summary tables:
+1. Extract the METRIC NAME (e.g., "# of Followers", "# of Product Reviews", "Ave Final price")
+2. Extract the BRAND's number
+3. Extract the COMPETITOR's number
+4. Map these to the correct JSON fields (followers, reviews_count, vouchers_active, etc.)
+
+Summary tables take priority over factor analysis tables when both exist.
 
 **Metrics to Extract:**
-From any visible columns:
-- Follower Count / # of Followers → followers
-- # of Product Reviews / Reviews / Ratings & Reviews → reviews_count
-- Rating & Review Score → avg_rating
-- # of Vouchers / Voucher Score / Vouchers Active → vouchers_active
-- Content Score / Videos Published → shopee_videos_count or videos_published
-- Ave Final price of top 3 SKU / Final Price → average_final_price
+From ANY visible table (factor analysis tables OR summary tables):
+- Follower Count / # of Followers / Follower Count Score → followers (use raw number if available, otherwise use score)
+- # of Product Reviews / Reviews / Ratings & Reviews / Review Count → reviews_count
+- Rating & Review Score / Avg Rating → avg_rating
+- # of Vouchers / Voucher Score / Vouchers Active / # of Vouchers seen in 1 week → vouchers_active
+- Content Score / Videos Published / # of Videos → shopee_videos_count or videos_published
+- Ave Final price of top 3 SKU / Final Price / Final Price Advantage → average_final_price
 
+If you find BOTH a score (2.9) and a raw number (16 vouchers) for the same metric:
+→ Use the RAW NUMBER in the JSON
+→ Ignore the score
 **OUTPUT JSON STRUCTURE:**
 
 {
@@ -284,7 +301,6 @@ Before submitting, verify:
 Analyze the screenshots now. Extract ALL data. Return ONLY valid JSON.`,
 
   stage1: `ROLE:
-
 
 You are a senior e-commerce strategist and Built to Scale™ expert.
 Your task is to produce a board-ready Quick Win Action Plan titled:
