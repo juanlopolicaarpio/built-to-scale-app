@@ -1,3 +1,4 @@
+// app/page.tsx
 'use client'
 
 import { useState } from 'react'
@@ -7,32 +8,25 @@ import { UploadZone } from '@/components/upload-zone'
 import { ProgressStepper } from '@/components/progress-stepper'
 import { ChatInterface } from '@/components/chat-interface'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Card } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, CheckCircle, Edit } from 'lucide-react'
+import { Loader2, CheckCircle, Send, Sparkles, Database } from 'lucide-react'
 
 export default function HomePage() {
   const [files, setFiles] = useState<File[]>([])
-  const [brand, setBrand] = useState('')
-  const [category, setCategory] = useState('')
-  const [competitor, setCompetitor] = useState('')
-  const [refineFeedback, setRefineFeedback] = useState('')
-  const [showRefineInput, setShowRefineInput] = useState(false)
+  const [chatInput, setChatInput] = useState('')
 
   const {
     status,
     messages,
-    projectData,
+    extractedData,
     conversationHistory,
     stage1Output,
-    stage2Output,
-    stage3Output,
     setStatus,
-    setProjectData,
+    setExtractedData,
     addMessage,
     addToConversationHistory,
     setStage1Output,
@@ -42,36 +36,84 @@ export default function HomePage() {
   } = useWorkflowStore()
 
   const handleStart = async () => {
-    if (files.length === 0 || !brand || !category) {
-      alert('Please upload screenshots and fill in brand/category')
+    if (files.length === 0) {
+      alert('Please upload at least one screenshot')
       return
     }
 
     try {
+      // PHASE 1: Convert images to base64
       setStatus('uploading')
       addMessage({
         role: 'system',
-        content: '🚀 Converting screenshots and preparing data...',
+        content: '🚀 Converting screenshots...',
       })
 
-      // Convert files to base64
       const screenshots = await Promise.all(
         files.map(file => fileToBase64(file))
       )
 
-      setProjectData({ brand, category, competitor, screenshots })
+      // PHASE 2: Extract data from screenshots (ONCE!)
+      addMessage({
+        role: 'system',
+        content: '🔍 Analyzing screenshots and extracting structured data...',
+      })
 
-      // Stage 1: Generate Plan
+      const extractResponse = await fetch('/api/workflow/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ screenshots }),
+      })
+
+      if (!extractResponse.ok) {
+        const errorData = await extractResponse.json()
+        throw new Error(errorData.error || 'Data extraction failed')
+      }
+
+      const { extractedData: data } = await extractResponse.json()
+      setExtractedData(data)
+
+      // Show extracted data summary to user
+      const dataSummary = `
+**Data Extracted Successfully!** 
+
+📊 **Brand:** ${data.brand.name}
+📁 **Category:** ${data.brand.category}
+🏢 **Competitors:** ${data.competitors.map((c: any) => c.name).join(', ')}
+
+**Platform Metrics:**
+${data.platform_data.shopee ? `
+- **Shopee:** ${data.platform_data.shopee.brand_metrics.followers} followers, ${data.platform_data.shopee.brand_metrics.reviews_count} reviews
+` : ''}
+${data.platform_data.lazada ? `
+- **Lazada:** ${data.platform_data.lazada.brand_metrics.followers} followers, ${data.platform_data.lazada.brand_metrics.reviews_count} reviews
+` : ''}
+${data.platform_data.tiktok ? `
+- **TikTok:** ${data.platform_data.tiktok.brand_metrics.followers} followers, ${data.platform_data.tiktok.brand_metrics.videos_published} videos
+` : ''}
+
+**Data Quality:** ${data.data_quality.completeness}
+${data.data_quality.missing_data_notes ? `\n⚠️ ${data.data_quality.missing_data_notes}` : ''}
+
+Ready to generate your Built to Scale™ plan?
+`
+
+      addMessage({
+        role: 'assistant',
+        content: dataSummary,
+      })
+
+      // PHASE 3: Generate plan using extracted TEXT data
       setStatus('generating_plan')
       addMessage({
         role: 'system',
-        content: '🤖 Generating your Built to Scale™ Quick Win Action Plan...',
+        content: '🤖 Generating Built to Scale™ Quick Win Action Plan...',
       })
 
       const stage1Response = await fetch('/api/workflow/stage1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ screenshots, brand, category, competitor }),
+        body: JSON.stringify({ extractedData: data }),
       })
 
       if (!stage1Response.ok) throw new Error('Stage 1 failed')
@@ -79,7 +121,6 @@ export default function HomePage() {
       const { output } = await stage1Response.json()
       setStage1Output(output)
       
-      // Track in conversation history
       addToConversationHistory('assistant', output)
 
       addMessage({
@@ -89,12 +130,73 @@ export default function HomePage() {
 
       addMessage({
         role: 'system',
-        content: '✅ Plan generated! Please review and approve or request changes.',
+        content: '💬 Review the plan above. Ask questions, request changes, or approve to proceed.',
       })
 
       setStatus('awaiting_approval')
     } catch (error: any) {
       console.error('Workflow error:', error)
+      setStatus('error')
+      addMessage({
+        role: 'system',
+        content: `❌ Error: ${error.message}`,
+      })
+    }
+  }
+
+  const handleContinueChat = async () => {
+    if (!chatInput.trim()) {
+      alert('Please type a message')
+      return
+    }
+
+    try {
+      addMessage({
+        role: 'user',
+        content: chatInput,
+      })
+      addToConversationHistory('user', chatInput)
+      
+      const userMessage = chatInput
+      setChatInput('')
+      
+      setStatus('generating_plan')
+      addMessage({
+        role: 'system',
+        content: '🤖 Processing your message...',
+      })
+
+      // Use extracted data (TEXT), not screenshots!
+      const response = await fetch('/api/workflow/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          extractedData, // TEXT data only!
+          conversationHistory,
+          feedback: userMessage,
+        }),
+      })
+
+      if (!response.ok) throw new Error('Failed to process message')
+
+      const { output } = await response.json()
+      setStage1Output(output)
+      
+      addToConversationHistory('assistant', output)
+
+      addMessage({
+        role: 'assistant',
+        content: output,
+      })
+
+      addMessage({
+        role: 'system',
+        content: '💬 Continue the conversation or approve when ready.',
+      })
+
+      setStatus('awaiting_approval')
+    } catch (error: any) {
+      console.error('Chat error:', error)
       setStatus('error')
       addMessage({
         role: 'system',
@@ -171,67 +273,6 @@ export default function HomePage() {
     }
   }
 
-  const handleRefine = async () => {
-    if (!refineFeedback.trim()) {
-      alert('Please provide feedback')
-      return
-    }
-
-    try {
-      setStatus('generating_plan')
-      
-      // Track user feedback in conversation
-      addToConversationHistory('user', refineFeedback)
-      
-      addMessage({
-        role: 'user',
-        content: `📝 Refinement requested:\n\n${refineFeedback}`,
-      })
-
-      const refineResponse = await fetch('/api/workflow/refine', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          screenshots: projectData?.screenshots || [],
-          brand: projectData?.brand || brand,
-          category: projectData?.category || category,
-          competitor: projectData?.competitor || competitor,
-          conversationHistory,
-          feedback: refineFeedback,
-        }),
-      })
-
-      if (!refineResponse.ok) throw new Error('Refinement failed')
-
-      const { output } = await refineResponse.json()
-      setStage1Output(output)
-      
-      // Track assistant's refined output
-      addToConversationHistory('assistant', output)
-
-      addMessage({
-        role: 'assistant',
-        content: output,
-      })
-
-      addMessage({
-        role: 'system',
-        content: '✅ Plan refined! Please review again.',
-      })
-
-      setStatus('awaiting_approval')
-      setRefineFeedback('')
-      setShowRefineInput(false)
-    } catch (error: any) {
-      console.error('Refine error:', error)
-      setStatus('error')
-      addMessage({
-        role: 'system',
-        content: `❌ Error: ${error.message}`,
-      })
-    }
-  }
-
   const isLoading = [
     'uploading',
     'generating_plan',
@@ -245,10 +286,10 @@ export default function HomePage() {
         {/* Header */}
         <div className="text-center">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            Built to Scale™ Automation
+            Built to Scale™ AI Strategist
           </h1>
           <p className="text-gray-600">
-            Upload screenshots → AI generates plan → Review → Auto fact-check & presentation
+            Upload screenshots → AI extracts data → Collaborative planning → Deliverables
           </p>
         </div>
 
@@ -257,48 +298,22 @@ export default function HomePage() {
           <ProgressStepper status={status} />
         </Card>
 
-        {/* Setup Form */}
+        {/* Upload Zone */}
         {status === 'idle' && (
           <Card className="p-6 space-y-6">
             <div>
-              <h2 className="text-2xl font-semibold mb-4">Project Setup</h2>
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div>
-                  <Label htmlFor="brand">Brand Name *</Label>
-                  <Input
-                    id="brand"
-                    value={brand}
-                    onChange={(e) => setBrand(e.target.value)}
-                    placeholder="e.g., Oxo Tot"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="category">Category *</Label>
-                  <Input
-                    id="category"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    placeholder="e.g., Baby Feeding"
-                  />
-                </div>
-                <div className="col-span-2">
-                  <Label htmlFor="competitor">Competitor (Optional)</Label>
-                  <Input
-                    id="competitor"
-                    value={competitor}
-                    onChange={(e) => setCompetitor(e.target.value)}
-                    placeholder="e.g., Main competitor brand"
-                  />
-                </div>
-              </div>
-
-              <Separator className="my-6" />
+              <h2 className="text-2xl font-semibold mb-2">Upload Your Screenshots</h2>
+              <p className="text-muted-foreground mb-6">
+                Upload screenshots of your brand and competitor pages from Shopee, Lazada, or TikTok Shop.
+                Our AI will extract all metrics automatically.
+              </p>
 
               <div>
-                <Label>Upload Screenshots *</Label>
-                <div className="mt-2">
-                  <UploadZone files={files} onFilesChange={setFiles} />
-                </div>
+                <Label>Screenshots from E-commerce Platforms *</Label>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Include: Product listings, shop profiles, pricing pages, competitor comparisons
+                </p>
+                <UploadZone files={files} onFilesChange={setFiles} />
               </div>
             </div>
 
@@ -306,9 +321,10 @@ export default function HomePage() {
               size="lg"
               className="w-full"
               onClick={handleStart}
-              disabled={files.length === 0 || !brand || !category}
+              disabled={files.length === 0}
             >
-              Start Workflow
+              <Database className="mr-2 h-5 w-5" />
+              Extract Data & Start Analysis
             </Button>
           </Card>
         )}
@@ -316,54 +332,50 @@ export default function HomePage() {
         {/* Chat Interface */}
         {messages.length > 0 && (
           <Card className="p-6">
-            <h2 className="text-xl font-semibold mb-4">Workflow Progress</h2>
+            <h2 className="text-xl font-semibold mb-4">AI Strategy Session</h2>
             <ChatInterface messages={messages} />
 
-            {/* Approval Actions */}
-            {status === 'awaiting_approval' && !showRefineInput && (
-              <div className="mt-6 flex gap-3">
-                <Button
-                  size="lg"
-                  className="flex-1"
-                  onClick={handleApprove}
-                >
-                  <CheckCircle className="mr-2 h-5 w-5" />
-                  Approve & Continue
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  onClick={() => setShowRefineInput(true)}
-                >
-                  <Edit className="mr-2 h-5 w-5" />
-                  Request Changes
-                </Button>
-              </div>
-            )}
-
-            {/* Refine Input */}
-            {status === 'awaiting_approval' && showRefineInput && (
-              <div className="mt-6 space-y-3">
-                <Label>What would you like to change?</Label>
-                <Textarea
-                  value={refineFeedback}
-                  onChange={(e) => setRefineFeedback(e.target.value)}
-                  placeholder="Describe the changes you'd like..."
-                  rows={4}
-                />
-                <div className="flex gap-3">
-                  <Button onClick={handleRefine} disabled={!refineFeedback.trim()}>
-                    Submit Changes
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setShowRefineInput(false)
-                      setRefineFeedback('')
+            {/* Chat Input */}
+            {status === 'awaiting_approval' && (
+              <div className="mt-6 space-y-4">
+                <Separator />
+                
+                <div className="space-y-3">
+                  <Label>Continue the conversation or approve to proceed</Label>
+                  <Textarea
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="Ask questions, request changes, provide more context..."
+                    rows={3}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleContinueChat()
+                      }
                     }}
-                  >
-                    Cancel
-                  </Button>
+                  />
+                  <div className="flex gap-3">
+                    <Button 
+                      onClick={handleContinueChat} 
+                      disabled={!chatInput.trim()}
+                      className="flex-1"
+                    >
+                      <Send className="mr-2 h-4 w-4" />
+                      Send Message
+                    </Button>
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      onClick={handleApprove}
+                      className="flex-1"
+                    >
+                      <CheckCircle className="mr-2 h-5 w-5" />
+                      Approve & Continue to Fact-Check
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Press Enter to send • Shift+Enter for new line
+                  </p>
                 </div>
               </div>
             )}
@@ -373,19 +385,39 @@ export default function HomePage() {
               <Alert className="mt-6">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <AlertDescription>
-                  Processing... This may take 30-60 seconds per stage.
+                  Processing... This may take 30-60 seconds.
                 </AlertDescription>
               </Alert>
             )}
 
             {/* Complete State */}
             {status === 'complete' && (
-              <div className="mt-6">
+              <div className="mt-6 space-y-4">
+                <Alert>
+                  <CheckCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    Your complete Built to Scale™ strategy is ready!
+                  </AlertDescription>
+                </Alert>
                 <Button size="lg" className="w-full" onClick={reset}>
                   Start New Project
                 </Button>
               </div>
             )}
+          </Card>
+        )}
+
+        {/* Debug Panel - Show extracted data */}
+        {extractedData && status !== 'idle' && (
+          <Card className="p-6">
+            <details>
+              <summary className="cursor-pointer font-semibold mb-2">
+                🔍 View Extracted Data (Debug)
+              </summary>
+              <pre className="text-xs bg-gray-100 p-4 rounded overflow-auto max-h-96">
+                {JSON.stringify(extractedData, null, 2)}
+              </pre>
+            </details>
           </Card>
         )}
       </div>

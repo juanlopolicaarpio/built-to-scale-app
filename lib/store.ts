@@ -1,4 +1,5 @@
-﻿'use client'
+﻿// lib/store.ts
+'use client'
 
 import { create } from 'zustand'
 import { WorkflowStatus, Message, ProjectData } from './types'
@@ -6,6 +7,7 @@ import { WorkflowStatus, Message, ProjectData } from './types'
 interface WorkflowStore {
   status: WorkflowStatus
   projectData: ProjectData | null
+  extractedData: any | null // NEW: Stores extracted structured data
   messages: Message[]
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>
   stage1Output: string | null
@@ -14,6 +16,7 @@ interface WorkflowStore {
   
   setStatus: (status: WorkflowStatus) => void
   setProjectData: (data: ProjectData) => void
+  setExtractedData: (data: any) => void // NEW
   addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void
   addToConversationHistory: (role: 'user' | 'assistant', content: string) => void
   setStage1Output: (output: string) => void
@@ -25,6 +28,7 @@ interface WorkflowStore {
 export const useWorkflowStore = create<WorkflowStore>((set) => ({
   status: 'idle',
   projectData: null,
+  extractedData: null, // NEW
   messages: [],
   conversationHistory: [],
   stage1Output: null,
@@ -34,6 +38,8 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   setStatus: (status) => set({ status }),
   
   setProjectData: (data) => set({ projectData: data }),
+  
+  setExtractedData: (data) => set({ extractedData: data }), // NEW
   
   addMessage: (message) => set((state) => ({
     messages: [
@@ -60,6 +66,7 @@ export const useWorkflowStore = create<WorkflowStore>((set) => ({
   reset: () => set({
     status: 'idle',
     projectData: null,
+    extractedData: null, // NEW
     messages: [],
     conversationHistory: [],
     stage1Output: null,
