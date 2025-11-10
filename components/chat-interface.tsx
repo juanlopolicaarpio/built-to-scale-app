@@ -3,6 +3,8 @@
 import { Message } from '@/lib/types'
 import { Card } from './ui/card'
 import { Bot, User } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface ChatInterfaceProps {
   messages: Message[]
@@ -12,9 +14,12 @@ export function ChatInterface({ messages }: ChatInterfaceProps) {
   return (
     <div className="space-y-4">
       {messages.map((msg) => (
-        <Card key={msg.id} className={`p-4 ${
-          msg.role === 'assistant' ? 'bg-blue-50' : 'bg-gray-50'
-        }`}>
+        <Card
+          key={msg.id}
+          className={`p-4 ${
+            msg.role === 'assistant' ? 'bg-blue-50' : 'bg-gray-50'
+          }`}
+        >
           <div className="flex gap-3">
             <div className="flex-shrink-0">
               {msg.role === 'assistant' ? (
@@ -27,9 +32,12 @@ export function ChatInterface({ messages }: ChatInterfaceProps) {
                 </div>
               )}
             </div>
+
             <div className="flex-1">
-              <div className="prose prose-sm max-w-none whitespace-pre-wrap">
-                {msg.content}
+              <div className="prose prose-sm max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {msg.content}
+                </ReactMarkdown>
               </div>
             </div>
           </div>

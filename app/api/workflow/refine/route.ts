@@ -3,59 +3,191 @@ import { NextRequest, NextResponse } from 'next/server'
 import { openai } from '@/lib/openai'
 import { PROMPTS, fillPrompt } from '@/lib/prompts'
 
-export async function POST(req: NextRequest) {
-  try {
-    const { extractedData, conversationHistory, feedback } = await req.json()
+// Safe helpers (small subset)
+function safeNum(x: any) {
+  if (x == null) return null
+  const n = Number(String(x).replace(/,/g, ''))
+  return isNaN(n) ? null : n
+}
+function safeStr(x: any) {
+  if (x == null) return null
+  return String(x)
+}
+function ensureArray(x: any) {
+  if (!x) return []
+  return Array.isArray(x) ? x : [x]
+}
 
-    if (!extractedData) {
-      return NextResponse.json(
-        { error: 'No extracted data provided' },
-        { status: 400 }
-      )
+// Validate extractedData minimal shape
+function validateExtractedDataRefine(d: any) {
+  const missing: string[] = []
+  if (!d) {
+    missing.push('extractedData (body missing)')
+    return missing
+  }
+  if (!d.brand) missing.push('brand')
+  else {
+    if (!d.brand.name) missing.push('brand.name')
+    if (!d.brand.category) missing.push('brand.category')
+  }
+  // optional platform_data check (warn if not present)
+  if (!d.platform_data || Object.keys(d.platform_data).length === 0) {
+    missing.push('platform_data (none provided)')
+  }
+  return missing
+}
+
+// A defensive formatter: returns readable text ONLY
+function formatExtractedData(data: any): string {
+  const brand = data?.brand ?? {}
+  const competitors = ensureArray(data?.competitors)
+  const platform_data = data?.platform_data ?? {}
+  const competitive_insights = ensureArray(data?.competitive_insights)
+  const data_quality = data?.data_quality
+
+  let formatted = `=== EXTRACTED DATA FROM SCREENSHOTS ===\n\n`
+  formatted += `BRAND: ${brand?.name ?? 'Unknown'}\n`
+  formatted += `CATEGORY: ${brand?.category ?? 'Unknown'}\n`
+  formatted += `COMPETITORS: ${competitors.map((c: any) => c?.name ?? 'Unnamed').join(', ') || 'None identified'}\n\n`
+
+  const renderPlatform = (key: string, label: string) => {
+    const pd = platform_data[key]
+    if (!pd) {
+      formatted += `--- ${label.toUpperCase()} DATA ---\nNo ${label} data provided.\n\n`
+      return
     }
 
-    console.log('Refining plan with feedback...')
+    const bm = pd.brand_metrics ?? {}
+    formatted += `--- ${label.toUpperCase()} DATA ---\n`
+    formatted += `Brand Metrics:\n`
+    formatted += `- Shop Name: ${safeStr(bm.shop_name) ?? 'N/A'}\n`
+    const followers = safeNum(bm.followers)
+    formatted += `- Followers: ${followers != null ? followers.toLocaleString() : 'Not visible'}\n`
+    const reviews = safeNum(bm.reviews_count)
+    formatted += `- Reviews: ${reviews != null ? reviews.toLocaleString() : 'Not visible'}${bm.avg_rating ? ` (${bm.avg_rating}★)` : ''}\n`
+    formatted += `- Shop Badge: ${safeStr(bm.shop_badge) ?? 'None'}\n`
+    if (bm.pricing?.average_final_price != null) {
+      const avgPrice = safeNum(bm.pricing.average_final_price)
+      formatted += `- Average Final Price (Top 3 SKUs): ₱${avgPrice != null ? avgPrice : 'Not visible'}\n`
+    }
+    if (bm.promotions) {
+      const vouchers = safeNum(bm.promotions.vouchers_active)
+      formatted += `- Active Vouchers: ${vouchers != null ? vouchers : 'Not visible'}\n`
+      if (Array.isArray(bm.promotions.voucher_examples) && bm.promotions.voucher_examples.length > 0) {
+        formatted += `- Voucher Examples: ${bm.promotions.voucher_examples.join(', ')}\n`
+      }
+      if (Array.isArray(bm.promotions.non_voucher_promos) && bm.promotions.non_voucher_promos.length > 0) {
+        formatted += `- Other Promos: ${bm.promotions.non_voucher_promos.join(', ')}\n`
+      }
+    }
+    if (bm.content) {
+      const videos = safeNum(bm.content.shopee_videos_count ?? bm.content.videos_published ?? bm.content.lazlook_videos_count)
+      formatted += `- Content: ${videos != null ? `${videos} videos` : 'Not visible'}\n`
+      const liveSessions = safeNum(bm.content.live_sessions_count)
+      if (liveSessions != null) formatted += `- Live Sessions: ${liveSessions}\n`
+    }
+    formatted += `\n`
 
-    // Build the full conversation with TEXT ONLY (no images!)
+    // competitor metrics
+    const cm = pd.competitor_metrics
+    if (cm) {
+      formatted += `Competitor Metrics (${safeStr(cm.competitor_name) ?? 'Unknown'}):\n`
+      const cFollowers = safeNum(cm.followers)
+      formatted += `- Followers: ${cFollowers != null ? cFollowers.toLocaleString() : 'Not visible'}\n`
+      const cReviews = safeNum(cm.reviews_count)
+      formatted += `- Reviews: ${cReviews != null ? cReviews.toLocaleString() : 'Not visible'}${cm.avg_rating ? ` (${cm.avg_rating}★)` : ''}\n`
+      if (cm.pricing?.average_final_price != null) {
+        const cp = safeNum(cm.pricing.average_final_price)
+        formatted += `- Average Final Price (Top 3 SKUs): ₱${cp != null ? cp : 'Not visible'}\n`
+      }
+      formatted += `\n`
+    }
+  }
+
+  renderPlatform('shopee', 'Shopee')
+  renderPlatform('lazada', 'Lazada')
+  renderPlatform('tiktok', 'TikTok Shop')
+
+  if (competitive_insights.length > 0) {
+    formatted += `COMPETITIVE INSIGHTS:\n`
+    competitive_insights.forEach((ins: any) => {
+      formatted += `- ${ins}\n`
+    })
+    formatted += `\n`
+  }
+
+  if (data_quality) {
+    formatted += `DATA QUALITY:\n`
+    formatted += `- Completeness: ${safeStr(data_quality.completeness) ?? 'Unknown'}\n`
+    formatted += `- Confidence Level: ${safeStr(data_quality.confidence_level) ?? 'Unknown'}\n`
+    if (data_quality.missing_data_notes) {
+      formatted += `- Notes: ${safeStr(data_quality.missing_data_notes)}\n`
+    }
+    formatted += `\n`
+  }
+
+  // raw JSON for the model to reference (keeps it easy to read)
+  formatted += `RAW_JSON_SOURCE:\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n`
+
+  return formatted
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json()
+    const { extractedData, conversationHistory, feedback } = body ?? {}
+
+    // Validate minimal extractedData shape
+    const missing = validateExtractedDataRefine(extractedData)
+    if (missing.includes('extractedData (body missing)') || missing.includes('brand') || missing.includes('brand.name')) {
+      return NextResponse.json({ error: 'Missing critical extractedData fields', missing }, { status: 400 })
+    }
+
+    // Build messages array
     const messages: any[] = []
 
-    // Format extracted data as readable text
-    const dataContext = formatExtractedData(extractedData)
-    
-    // Fill prompt with brand/category/competitor from extracted data
-    const promptText = fillPrompt(PROMPTS.stage1, {
-      brand: extractedData.brand?.name || 'Brand',
-      category: extractedData.brand?.category || 'Category',
-      competitor: extractedData.competitors?.[0]?.name || 'Competitor',
+    // system role: instruct the model clearly about Stage 1/Refine behavior
+    messages.push({
+      role: 'system',
+      content: `You are a senior e-commerce strategist and Built to Scale™ expert. When asked to refine a plan, only use the provided data and prior assistant/user turns. If data is missing, include Data-Lock notices and avoid inventing numeric baselines.`,
     })
 
-    // Add initial context (data + prompt) - TEXT ONLY, NO IMAGES
+    // Format extractedData safely
+    const dataContext = formatExtractedData(extractedData)
+
+    // Fill prompt with safe fallbacks
+    const promptText = fillPrompt(PROMPTS.stage1, {
+      brand: extractedData?.brand?.name ?? 'Brand',
+      category: extractedData?.brand?.category ?? 'Category',
+      competitor:
+        (Array.isArray(extractedData?.competitors) && extractedData.competitors[0]?.name) ??
+        extractedData?.platform_data?.shopee?.competitor_metrics?.competitor_name ??
+        'Competitor',
+    })
+
+    // initial user message = data + prompt
     messages.push({
       role: 'user',
       content: `${dataContext}\n\n${promptText}`,
     })
 
-    // Add all previous conversation turns
-    conversationHistory.forEach((turn: { role: string; content: string }) => {
-      if (turn.role === 'assistant') {
-        messages.push({
-          role: 'assistant',
-          content: turn.content,
-        })
-      } else if (turn.role === 'user') {
-        messages.push({
-          role: 'user',
-          content: turn.content,
-        })
+    // Add conversationHistory safely (could be null)
+    const history = Array.isArray(conversationHistory) ? conversationHistory : []
+    for (const turn of history) {
+      if (!turn || !turn.role || !turn.content) continue
+      // respect roles only 'assistant' or 'user'
+      if (turn.role === 'assistant' || turn.role === 'user') {
+        messages.push({ role: turn.role, content: String(turn.content) })
       }
-    })
+    }
 
-    // Add the new feedback
+    // Add feedback
     messages.push({
       role: 'user',
-      content: `Please revise the plan based on this feedback:\n\n${feedback}`,
+      content: `Please revise the plan based on this feedback:\n\n${String(feedback ?? '')}`,
     })
 
+    // Call OpenAI
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages,
@@ -63,177 +195,15 @@ export async function POST(req: NextRequest) {
       temperature: 0.7,
     })
 
-    const output = completion.choices[0].message.content || ''
-    
-    console.log('✅ Plan refined successfully')
-    
-    return NextResponse.json({ output })
+    const output = completion.choices?.[0]?.message?.content ?? ''
+
+    return NextResponse.json({
+      output,
+      validation_warnings: missing,
+      formatted_input: dataContext,
+    })
   } catch (error: any) {
     console.error('Refine error:', error)
-    return NextResponse.json(
-      { error: error.message || 'Refinement failed' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: error?.message ?? 'Refinement failed' }, { status: 500 })
   }
-}
-
-// Helper function to format extracted JSON data into readable text for the prompt
-function formatExtractedData(data: any): string {
-  const { brand, competitors, platform_data, competitive_insights, data_quality } = data
-  
-  let formatted = `=== EXTRACTED DATA FROM SCREENSHOTS ===\n\n`
-  
-  // Brand info
-  formatted += `BRAND: ${brand?.name || 'Unknown'}\n`
-  formatted += `CATEGORY: ${brand?.category || 'Unknown'}\n`
-  formatted += `COMPETITORS: ${competitors?.map((c: any) => c.name).join(', ') || 'None identified'}\n\n`
-  
-  // Format Shopee data if available
-  if (platform_data?.shopee?.brand_metrics) {
-    const shopee = platform_data.shopee
-    formatted += `--- SHOPEE DATA ---\n`
-    formatted += `Brand Metrics:\n`
-    formatted += `- Shop Name: ${shopee.brand_metrics.shop_name || 'N/A'}\n`
-    formatted += `- Followers: ${shopee.brand_metrics.followers !== null ? shopee.brand_metrics.followers.toLocaleString() : 'Not visible'}\n`
-    formatted += `- Reviews: ${shopee.brand_metrics.reviews_count !== null ? shopee.brand_metrics.reviews_count : 'Not visible'} ${shopee.brand_metrics.avg_rating ? `(${shopee.brand_metrics.avg_rating}★)` : ''}\n`
-    formatted += `- Shop Badge: ${shopee.brand_metrics.shop_badge || 'None'}\n`
-    
-    if (shopee.brand_metrics.pricing?.average_final_price) {
-      formatted += `- Average Final Price (Top 3 SKUs): ₱${shopee.brand_metrics.pricing.average_final_price}\n`
-    }
-    
-    if (shopee.brand_metrics.promotions) {
-      formatted += `- Active Vouchers: ${shopee.brand_metrics.promotions.vouchers_active !== null ? shopee.brand_metrics.promotions.vouchers_active : 'Not visible'}\n`
-      if (shopee.brand_metrics.promotions.voucher_examples?.length > 0) {
-        formatted += `- Voucher Examples: ${shopee.brand_metrics.promotions.voucher_examples.join(', ')}\n`
-      }
-      if (shopee.brand_metrics.promotions.non_voucher_promos?.length > 0) {
-        formatted += `- Other Promos: ${shopee.brand_metrics.promotions.non_voucher_promos.join(', ')}\n`
-      }
-    }
-    
-    if (shopee.brand_metrics.content) {
-      formatted += `- Content: ${shopee.brand_metrics.content.shopee_videos_count !== null ? shopee.brand_metrics.content.shopee_videos_count : 'N/A'} videos, ${shopee.brand_metrics.content.product_listings_count !== null ? shopee.brand_metrics.content.product_listings_count : 'N/A'} listings\n`
-    }
-    
-    if (shopee.brand_metrics.visibility) {
-      formatted += `- Search Ranking: ${shopee.brand_metrics.visibility.search_ranking_position ? `#${shopee.brand_metrics.visibility.search_ranking_position}` : 'Not visible'}\n`
-      formatted += `- Paid Ad Visible: ${shopee.brand_metrics.visibility.paid_ad_visible ? 'Yes' : 'No'}\n`
-    }
-    
-    formatted += `\n`
-    
-    // Competitor data
-    if (shopee.competitor_metrics) {
-      formatted += `Competitor Metrics (${shopee.competitor_metrics.competitor_name || 'Unknown'}):\n`
-      formatted += `- Followers: ${shopee.competitor_metrics.followers !== null ? shopee.competitor_metrics.followers.toLocaleString() : 'Not visible'}\n`
-      formatted += `- Reviews: ${shopee.competitor_metrics.reviews_count !== null ? shopee.competitor_metrics.reviews_count : 'Not visible'} ${shopee.competitor_metrics.avg_rating ? `(${shopee.competitor_metrics.avg_rating}★)` : ''}\n`
-      if (shopee.competitor_metrics.pricing?.average_final_price) {
-        formatted += `- Average Final Price (Top 3 SKUs): ₱${shopee.competitor_metrics.pricing.average_final_price}\n`
-      }
-      formatted += `- Active Vouchers: ${shopee.competitor_metrics.vouchers_active !== null ? shopee.competitor_metrics.vouchers_active : 'Not visible'}\n`
-      formatted += `- Content Count: ${shopee.competitor_metrics.content_count !== null ? shopee.competitor_metrics.content_count : 'Not visible'}\n`
-      formatted += `\n`
-    }
-  }
-  
-  // Format Lazada data if available
-  if (platform_data?.lazada?.brand_metrics) {
-    const lazada = platform_data.lazada
-    formatted += `--- LAZADA DATA ---\n`
-    formatted += `Brand Metrics:\n`
-    formatted += `- Shop Name: ${lazada.brand_metrics.shop_name || 'N/A'}\n`
-    formatted += `- Followers: ${lazada.brand_metrics.followers !== null ? lazada.brand_metrics.followers.toLocaleString() : 'Not visible'}\n`
-    formatted += `- Reviews: ${lazada.brand_metrics.reviews_count !== null ? lazada.brand_metrics.reviews_count : 'Not visible'} ${lazada.brand_metrics.avg_rating ? `(${lazada.brand_metrics.avg_rating}★)` : ''}\n`
-    formatted += `- Shop Badge: ${lazada.brand_metrics.shop_badge || 'None'}\n`
-    
-    if (lazada.brand_metrics.pricing?.average_final_price) {
-      formatted += `- Average Final Price (Top 3 SKUs): ₱${lazada.brand_metrics.pricing.average_final_price}\n`
-    }
-    
-    if (lazada.brand_metrics.promotions) {
-      formatted += `- Active Vouchers: ${lazada.brand_metrics.promotions.vouchers_active !== null ? lazada.brand_metrics.promotions.vouchers_active : 'Not visible'}\n`
-      if (lazada.brand_metrics.promotions.voucher_examples?.length > 0) {
-        formatted += `- Voucher Examples: ${lazada.brand_metrics.promotions.voucher_examples.join(', ')}\n`
-      }
-      formatted += `- Flexi-Combo Visible: ${lazada.brand_metrics.promotions.flexi_combo_visible ? 'Yes' : 'No'}\n`
-    }
-    
-    if (lazada.brand_metrics.content) {
-      formatted += `- LazLook Videos: ${lazada.brand_metrics.content.lazlook_videos_count !== null ? lazada.brand_metrics.content.lazlook_videos_count : 'Not visible'}\n`
-    }
-    
-    formatted += `\n`
-    
-    // Competitor data
-    if (lazada.competitor_metrics) {
-      formatted += `Competitor Metrics (${lazada.competitor_metrics.competitor_name || 'Unknown'}):\n`
-      formatted += `- Followers: ${lazada.competitor_metrics.followers !== null ? lazada.competitor_metrics.followers.toLocaleString() : 'Not visible'}\n`
-      formatted += `- Reviews: ${lazada.competitor_metrics.reviews_count !== null ? lazada.competitor_metrics.reviews_count : 'Not visible'} ${lazada.competitor_metrics.avg_rating ? `(${lazada.competitor_metrics.avg_rating}★)` : ''}\n`
-      if (lazada.competitor_metrics.pricing?.average_final_price) {
-        formatted += `- Average Final Price (Top 3 SKUs): ₱${lazada.competitor_metrics.pricing.average_final_price}\n`
-      }
-      formatted += `- Active Vouchers: ${lazada.competitor_metrics.vouchers_active !== null ? lazada.competitor_metrics.vouchers_active : 'Not visible'}\n`
-      formatted += `\n`
-    }
-  }
-  
-  // Format TikTok data if available
-  if (platform_data?.tiktok?.brand_metrics) {
-    const tiktok = platform_data.tiktok
-    formatted += `--- TIKTOK SHOP DATA ---\n`
-    formatted += `Brand Metrics:\n`
-    formatted += `- Shop Name: ${tiktok.brand_metrics.shop_name || 'N/A'}\n`
-    formatted += `- Followers: ${tiktok.brand_metrics.followers !== null ? tiktok.brand_metrics.followers.toLocaleString() : 'Not visible'}\n`
-    formatted += `- Videos Published: ${tiktok.brand_metrics.videos_published !== null ? tiktok.brand_metrics.videos_published : 'Not visible'}\n`
-    
-    if (tiktok.brand_metrics.pricing?.average_final_price) {
-      formatted += `- Average Final Price (Top 3 SKUs): ₱${tiktok.brand_metrics.pricing.average_final_price}\n`
-    }
-    
-    if (tiktok.brand_metrics.content) {
-      formatted += `- Video Frequency: ${tiktok.brand_metrics.content.video_frequency || 'Not visible'}\n`
-      formatted += `- Live Sessions: ${tiktok.brand_metrics.content.live_sessions_count !== null ? tiktok.brand_metrics.content.live_sessions_count : 'Not visible'}\n`
-      formatted += `- Creator Partnerships: ${tiktok.brand_metrics.content.creator_partnerships !== null ? tiktok.brand_metrics.content.creator_partnerships : 'Not visible'}\n`
-    }
-    
-    if (tiktok.brand_metrics.engagement) {
-      formatted += `- Affiliate Program: ${tiktok.brand_metrics.engagement.affiliate_program_active ? 'Active' : 'Not active'}\n`
-    }
-    
-    formatted += `\n`
-    
-    // Competitor data
-    if (tiktok.competitor_metrics) {
-      formatted += `Competitor Metrics (${tiktok.competitor_metrics.competitor_name || 'Unknown'}):\n`
-      formatted += `- Followers: ${tiktok.competitor_metrics.followers !== null ? tiktok.competitor_metrics.followers.toLocaleString() : 'Not visible'}\n`
-      formatted += `- Videos Published: ${tiktok.competitor_metrics.videos_published !== null ? tiktok.competitor_metrics.videos_published : 'Not visible'}\n`
-      if (tiktok.competitor_metrics.pricing?.average_final_price) {
-        formatted += `- Average Final Price (Top 3 SKUs): ₱${tiktok.competitor_metrics.pricing.average_final_price}\n`
-      }
-      formatted += `- Live Sessions: ${tiktok.competitor_metrics.live_sessions_count !== null ? tiktok.competitor_metrics.live_sessions_count : 'Not visible'}\n`
-      formatted += `\n`
-    }
-  }
-  
-  // Add competitive insights
-  if (competitive_insights && competitive_insights.length > 0) {
-    formatted += `COMPETITIVE INSIGHTS:\n`
-    competitive_insights.forEach((insight: string) => {
-      formatted += `- ${insight}\n`
-    })
-    formatted += `\n`
-  }
-  
-  // Add data quality notes
-  if (data_quality) {
-    formatted += `DATA QUALITY:\n`
-    formatted += `- Completeness: ${data_quality.completeness}\n`
-    formatted += `- Confidence Level: ${data_quality.confidence_level}\n`
-    if (data_quality.missing_data_notes) {
-      formatted += `- Notes: ${data_quality.missing_data_notes}\n`
-    }
-  }
-  
-  return formatted
 }
